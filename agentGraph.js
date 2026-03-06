@@ -6,35 +6,87 @@ async function retrieveEvents(state){
 
  const results = await recommendEvents(state.query);
 
+ const formatted = results.map(e => ({
+  title: e.metadata.title,
+  score: e.score
+ }));
+
  return {
   ...state,
-  events: results
+  events: results,
+  result: formatted
  };
 
 }
 
-async function explainEvents(state){
+async function planQuery(state){
 
- const explanations = [];
-
- for(const event of state.events){
-
-  const reason = await explainRecommendation(
-   state.query,
-   event.metadata
-  );
-
-  explanations.push({
-   title: event.metadata.title,
-   score: event.score,
-   reason
-  });
-
- }
+ console.log("Planning query...");
 
  return {
   ...state,
-  result: explanations
+  task: "retrieveEvents"
+ };
+
+}
+
+import { GoogleGenAI } from "@google/genai";
+
+const genAI = new GoogleGenAI({
+ apiKey: process.env.GEMINI_API_KEY
+});
+
+
+
+async function filterEvents(state){
+
+ const now = new Date();
+
+ const filtered = state.events.filter(e => {
+
+ if(!e.metadata.deadline) return true;
+
+ const deadline = new Date(e.metadata.deadline);
+
+ return !isNaN(deadline) && deadline > now;
+
+});
+
+ return {
+  ...state,
+  events: filtered
+ };
+
+}
+
+async function rankEvents(state){
+
+ const queryWords = state.query.toLowerCase().split(" ");
+
+ const ranked = state.events.map(e => {
+
+  const skills = (e.metadata.skills || []).join(" ").toLowerCase();
+
+  let extraScore = 0;
+
+  queryWords.forEach(word => {
+   if(skills.includes(word)){
+    extraScore += 1;
+   }
+  });
+
+  return {
+   title: e.metadata.title,
+   score: e.score + extraScore
+  };
+
+ });
+
+ ranked.sort((a,b)=> b.score - a.score);
+
+ return {
+  ...state,
+  result: ranked
  };
 
 }
@@ -49,11 +101,16 @@ const graph = new StateGraph({
 
 });
 
+graph.addNode("planQuery", planQuery);
 graph.addNode("retrieveEvents", retrieveEvents);
-graph.addNode("explainEvents", explainEvents);
+graph.addNode("filterEvents", filterEvents);
+graph.addNode("rankEvents", rankEvents);
 
-graph.setEntryPoint("retrieveEvents");
+graph.setEntryPoint("planQuery");
 
-graph.addEdge("retrieveEvents", "explainEvents");
+graph.addEdge("planQuery", "retrieveEvents");
+graph.addEdge("retrieveEvents", "filterEvents");
+graph.addEdge("filterEvents", "rankEvents");
+graph.addEdge("rankEvents", "__end__");
 
 export const agentWorkflow = graph.compile();
